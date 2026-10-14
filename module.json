@@ -1,0 +1,37 @@
+{
+  "id": "lipatos-encumbrance",
+  "title": "LipatoS — Нагрузка",
+  "description": "Автоматические три степени перегруза, реальные Active Effects и ограничения перемещения персонажей.",
+  "version": "0.1.0",
+  "authors": [
+    {
+      "name": "LipatoS",
+      "url": "https://github.com/Lipatosha"
+    }
+  ],
+  "compatibility": {
+    "minimum": "14",
+    "verified": "14",
+    "maximum": "14"
+  },
+  "relationships": {
+    "systems": [
+      {
+        "id": "dnd5e",
+        "type": "system",
+        "compatibility": {
+          "minimum": "6.0.6",
+          "verified": "6.0.6"
+        }
+      }
+    ]
+  },
+  "esmodules": [
+    "scripts/main.mjs"
+  ],
+  "url": "https://github.com/Lipatosha/LipatoS-Encumbrance",
+  "manifest": "https://raw.githubusercontent.com/Lipatosha/LipatoS-Encumbrance/main/module.json",
+  "download": "https://raw.githubusercontent.com/Lipatosha/LipatoS-Encumbrance/main/dist/lipatos-encumbrance.zip",
+  "readme": "https://github.com/Lipatosha/LipatoS-Encumbrance/blob/main/README.md",
+  "bugs": "https://github.com/Lipatosha/LipatoS-Encumbrance/issues"
+}
