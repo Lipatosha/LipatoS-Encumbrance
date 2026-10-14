@@ -6,7 +6,7 @@ const DETAILS = [
   "Скорость перемещения уменьшается на 20 футов. Помеха на броски атаки, проверки характеристик и спасброски с использованием Силы, Ловкости или Телосложения.",
   "Скорость перемещения становится 0 футов. Помеха на броски атаки, проверки характеристик и спасброски с использованием Силы, Ловкости или Телосложения."
 ];
-const EFFECT_ICON = "icons/svg/weight.svg";
+const EFFECT_ICON = "icons/svg/hazard.svg";
 const queues = new Map();
 
 function num(value, fallback = NaN) {
@@ -93,7 +93,8 @@ async function synchronize(actor) {
 }
 
 function enqueue(actor) {
-  if (!actor || !game.user?.isGM || !actor.id || actor.type !== "character") return;
+  const primaryGM = game.users.filter(u => u.active && u.isGM).sort((a, b) => a.id.localeCompare(b.id))[0];
+  if (!actor || !game.user?.isGM || game.user.id !== primaryGM?.id || !actor.id || actor.type !== "character") return;
   if (queues.has(actor.uuid)) clearTimeout(queues.get(actor.uuid));
   queues.set(actor.uuid, setTimeout(async () => {
     queues.delete(actor.uuid);
@@ -146,7 +147,7 @@ function rejectMove(message) {
 }
 
 function validateMovement(document, movement) {
-  if (game.user?.isGM) return;
+  if (game.user?.isGM || !game.settings.get(ID, "enabled")) return;
   if (!document?.actor || document.actor.type !== "character" || !document.isOwner) return;
   const speed = getSpeed(document.actor);
   // When speed is 0 a player cannot move the token, whether or not combat is active.
