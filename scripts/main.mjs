@@ -315,3 +315,95 @@ function enforceOverloadRoll(rolls, process) {
 
 Hooks.on("renderApplicationV2", attachRollGuardUI);
 Hooks.on("dnd5e.postD20TestRollConfiguration", enforceOverloadRoll);
+
+
+// ---------------------------------------------------------------------------
+// Argon Combat HUD (CORE + DND5E) / native dnd5e Dash integrations.
+// Argon's synthetic "Dash" posts a chat card and consumes an action; it does
+// not itself modify the movement budget. Listen for that *specific* card only.
+// ---------------------------------------------------------------------------
+const pendingDash = new Set();
+const DASH_ICON = "modules/enhancedcombathud/icons/walking-boot.webp";
+
+function isDashName(name) {
+  const normalized = String(name ?? "").trim().toLocaleLowerCase();
+  if (!normalized) return false;
+  const localized = game.i18n?.localize?.("enhancedcombathud-dnd5e.items.dash.name");
+  return [localized, "Dash", "Рывок"].some(label =>
+    normalized === String(label ?? "").trim().toLocaleLowerCase());
+}
+
+/** Resolve the token currently taking the turn. Other combatants never get the bonus. */
+function dashTokenForActor(actorId, speakerTokenId = null) {
+  const c = game.combat?.combatant;
+  if (!game.combat?.started || !c) return null;
+  let token = c.token ?? c.actor?.token;
+  if (token?.document) token = token.document;
+  const actor = token?.actor ?? c.actor;
+  if (!actor || (actorId && actor.id !== actorId && c.actor?.id !== actorId)) return null;
+  if (speakerTokenId && token?.id && speakerTokenId !== token.id) return null;
+  if (token?.documentName === "Token" && token.isOwner) return token;
+  const argonToken = ui.ARGON?._token?.document;
+  if (argonToken?.id === c.tokenId && argonToken?.isOwner) return argonToken;
+  return null;
+}
+
+function syncArgonDashAction(document) {
+  try {
+    if (ui.ARGON?._actor?.id !== document.actor?.id) return;
+    const actionPanel = ui.ARGON.components?.main?.[0];
+    if (actionPanel) {
+      actionPanel.isActionUsed = true;
+      actionPanel.updateActionUse?.();
+    }
+    ui.ARGON.components?.movement?.updateMovement?.();
+  } catch (error) {
+    console.warn("LipatoS Encumbrance: Argon HUD could not refresh its action indicator", error);
+  }
+}
+
+async function registerExternalDash(document) {
+  if (!document?.uuid || pendingDash.has(document.uuid) || !canDash(document)) return false;
+  pendingDash.add(document.uuid);
+  try {
+    const applied = await useDash(document);
+    if (applied) syncArgonDashAction(document);
+    return applied;
+  } catch (error) {
+    console.error("LipatoS Encumbrance: could not register Dash", error);
+    ui.notifications.error("Не удалось учесть Рывок в перемещении.");
+    return false;
+  } finally {
+    pendingDash.delete(document.uuid);
+  }
+}
+
+/** Ignore other chat cards: only Argon's synthetic special action has this icon. */
+function isArgonSyntheticDash(message) {
+  const content = String(message?.content ?? "");
+  if (!content.includes(DASH_ICON) || !content.includes("dnd5e2 chat-card item-card")) return false;
+  const title = content.match(/<span\s+class=["']title["']>([^<]*)<\/span>/i)?.[1];
+  return isDashName(title);
+}
+
+Hooks.on("createChatMessage", (message, options, userId) => {
+  if (!game.modules.get("enhancedcombathud-dnd5e")?.active) return;
+  if (game.user?.isGM || !game.settings.get(ID, "enabled")) return;
+  const authorId = message.user?.id ?? message.user ?? userId;
+  if (authorId !== game.user.id || !isArgonSyntheticDash(message)) return;
+  const actorId = message.speaker?.actor?.id ?? message.speaker?.actor;
+  const speakerTokenId = typeof message.speaker?.token === "string" ? message.speaker.token : message.speaker?.token?.id;
+  const token = dashTokenForActor(actorId, speakerTokenId);
+  if (token) void registerExternalDash(token);
+});
+
+/** Owned Dash features can be activities and skip Argon's synthetic chat card. */
+Hooks.on("dnd5e.postUseActivity", (activity) => {
+  if (game.user?.isGM || !game.settings.get(ID, "enabled")) return;
+  if (!game.modules.get("enhancedcombathud-dnd5e")?.active) return;
+  const item = activity?.item;
+  if (!item || item.type !== "feat" || !isDashName(item.name)) return;
+  if (activity.activation?.type !== "action") return;
+  const token = dashTokenForActor(item.actor?.id ?? item.parent?.id);
+  if (token) void registerExternalDash(token);
+});
