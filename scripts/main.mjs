@@ -115,33 +115,66 @@ function getSpeed(actor) {
   return Math.max(0, num(value, 0));
 }
 
+const dashInCurrentSession = new Set();
+
+/** Resolve the active combatant by token identity rather than a token getter alone. */
 function currentTurn(document) {
   const combat = game.combat;
-  const own = document.combatant;
-  if (!combat?.started || !own || own.id !== combat.combatant?.id) return null;
+  const own = combat?.combatant;
+  if (!combat?.started || !own || !document) return null;
+  const actual = document.document ?? document;
+  const tokenId = actual.id;
+  const sceneId = actual.parent?.id;
+  const participantTokenId = own.tokenId ?? own.token?.id ?? own.token?.document?.id;
+  const participantSceneId = own.sceneId ?? own.token?.parent?.id;
+  const sameToken = Boolean(tokenId && participantTokenId && tokenId === participantTokenId
+    && (!participantSceneId || !sceneId || participantSceneId === sceneId));
+  const sameCombatant = actual.combatant?.id === own.id;
+  if (!sameToken && !sameCombatant) return null;
   return {combat, own};
 }
 
+function dashKey(document) {
+  const turn = currentTurn(document);
+  return turn ? [turn.combat.id, turn.combat.round, turn.combat.turn, turn.own.id].join(":") : null;
+}
+
 function dashFlag(document) {
-  return document.getFlag(ID, "dash") ?? {};
+  return document.getFlag?.(ID, "dash") ?? {};
 }
 
 function dashUsed(document) {
   const turn = currentTurn(document);
   if (!turn) return false;
+  const key = dashKey(document);
+  if (key && dashInCurrentSession.has(key)) return true;
   const d = dashFlag(document);
-  return d.combat === turn.combat.id && d.round === turn.combat.round && d.turn === turn.combat.turn;
+  return d.combat === turn.combat.id && d.round === turn.combat.round
+    && d.turn === turn.combat.turn && d.combatant === turn.own.id;
 }
 
 function canDash(document) {
-  return Boolean(!game.user?.isGM && document?.actor?.type === "character" && document.isOwner && currentTurn(document) && !dashUsed(document) && getSpeed(document.actor) > 0);
+  const actor = document?.actor;
+  return Boolean(!game.user?.isGM && actor?.type === "character"
+    && (document.isOwner || actor.isOwner) && currentTurn(document)
+    && !dashUsed(document) && getSpeed(actor) > 0);
 }
 
 async function useDash(document) {
   if (!canDash(document)) return false;
-  const {combat} = currentTurn(document);
-  await document.setFlag(ID, "dash", {combat: combat.id, round: combat.round, turn: combat.turn});
-  ui.notifications.info("Рывок: к доступному перемещению добавлена ещё одна скорость. Действие потрачено.");
+  const {combat, own} = currentTurn(document);
+  const key = dashKey(document);
+  if (!key) return false;
+  dashInCurrentSession.add(key);
+  // The player's movement allowance must not depend on permission to update
+  // token flags: Foundry can reject token updates even for an owned actor.
+  try {
+    await document.setFlag?.(ID, "dash", {combat: combat.id, round: combat.round,
+      turn: combat.turn, combatant: own.id});
+  } catch (error) {
+    console.warn("LipatoS Encumbrance: Dash session registered; token flag could not be saved", error);
+  }
+  ui.notifications.info("Рывок засчитан: дополнительное перемещение +" + getSpeed(document.actor) + " футов.");
   return true;
 }
 
@@ -336,7 +369,13 @@ function enforceOverloadRoll(rolls, process) {
 }
 
 Hooks.on("renderApplicationV2", attachRollGuardUI);
-Hooks.on("dnd5e.postBuildD20TestRollConfig", enforceOverloadConfig);
+Hooks.on("dnd5e.preRollAttack", (process) => {
+  // D&D5e public hook only, with no item/activity ownership changes.
+  if (!process?.hookNames?.includes("attack")) return;
+  for (const config of process.rolls ?? []) {
+    enforceOverloadConfig(process, config);
+  }
+});
 Hooks.on("dnd5e.postD20TestRollConfiguration", enforceOverloadRoll);
 
 
@@ -360,15 +399,42 @@ function isDashName(name) {
 function dashTokenForActor(actorId, speakerTokenId = null) {
   const c = game.combat?.combatant;
   if (!game.combat?.started || !c) return null;
-  let token = c.token ?? c.actor?.token;
-  if (token?.document) token = token.document;
-  const actor = token?.actor ?? c.actor;
-  if (!actor || (actorId && actor.id !== actorId && c.actor?.id !== actorId)) return null;
-  if (speakerTokenId && token?.id && speakerTokenId !== token.id) return null;
-  if (token?.documentName === "Token" && token.isOwner) return token;
-  const argonToken = ui.ARGON?._token?.document;
-  if (argonToken?.id === c.tokenId && argonToken?.isOwner) return argonToken;
+  const combatTokenId = c.tokenId ?? c.token?.id ?? c.token?.document?.id;
+  const possibilities = [
+    ui.ARGON?._token?.document,
+    c.token?.document ?? c.token,
+    c.actor?.token?.document ?? c.actor?.token,
+    ...(canvas?.tokens?.controlled ?? []).map(t => t.document)
+  ];
+  const normalizedActorId = typeof actorId === "object" ? actorId?.id : actorId;
+  const normalizedTokenId = typeof speakerTokenId === "object" ? speakerTokenId?.id : speakerTokenId;
+  for (const token of possibilities) {
+    if (!token || !currentTurn(token)) continue;
+    if (normalizedTokenId && token.id !== normalizedTokenId) continue;
+    const actor = token.actor ?? c.actor;
+    if (normalizedActorId && actor?.id !== normalizedActorId && c.actor?.id !== normalizedActorId) continue;
+    if (actor?.type === "character" && (token.isOwner || actor.isOwner)) return token;
+  }
   return null;
+}
+
+function patchArgonMovementHud() {
+  const movement = ui.ARGON?.components?.movement;
+  if (!movement || movement._lipatosEncDashPatched) return;
+  const prototype = Object.getPrototypeOf(movement);
+  const baseGetter = Object.getOwnPropertyDescriptor(prototype, "movementMax")?.get;
+  if (typeof baseGetter !== "function") return;
+  Object.defineProperty(movement, "movementMax", {
+    configurable: true,
+    get() {
+      const base = baseGetter.call(this);
+      const token = this.token?.document ?? this.token;
+      if (!token || !dashUsed(token)) return base;
+      const units = Number(canvas?.scene?.dimensions?.distance) || 5;
+      return base + (getSpeed(token.actor) / units);
+    }
+  });
+  movement._lipatosEncDashPatched = true;
 }
 
 function syncArgonDashAction(document) {
@@ -379,6 +445,7 @@ function syncArgonDashAction(document) {
       actionPanel.isActionUsed = true;
       actionPanel.updateActionUse?.();
     }
+    patchArgonMovementHud();
     ui.ARGON.components?.movement?.updateMovement?.();
   } catch (error) {
     console.warn("LipatoS Encumbrance: Argon HUD could not refresh its action indicator", error);
@@ -404,8 +471,8 @@ async function registerExternalDash(document) {
 /** Ignore other chat cards: only Argon's synthetic special action has this icon. */
 function isArgonSyntheticDash(message) {
   const content = String(message?.content ?? "");
-  if (!content.includes(DASH_ICON) || !content.includes("dnd5e2 chat-card item-card")) return false;
-  const title = content.match(/<span\s+class=["']title["']>([^<]*)<\/span>/i)?.[1];
+  if (!content.includes(DASH_ICON) || !content.includes("chat-card")) return false;
+  const title = content.match(/<span[^>]*class=["'][^"']*\btitle\b[^"']*["'][^>]*>([^<]*)<\/span>/i)?.[1];
   return isDashName(title);
 }
 
@@ -414,10 +481,13 @@ Hooks.on("createChatMessage", (message, options, userId) => {
   if (game.user?.isGM || !game.settings.get(ID, "enabled")) return;
   const authorId = message.user?.id ?? message.user ?? userId;
   if (authorId !== game.user.id || !isArgonSyntheticDash(message)) return;
-  const actorId = message.speaker?.actor?.id ?? message.speaker?.actor;
-  const speakerTokenId = typeof message.speaker?.token === "string" ? message.speaker.token : message.speaker?.token?.id;
+  const actorId = message.speaker?.actor;
+  const speakerTokenId = message.speaker?.token;
   const token = dashTokenForActor(actorId, speakerTokenId);
   if (token) void registerExternalDash(token);
+  else console.warn("LipatoS Encumbrance: Argon Dash detected but current turn token could not be resolved", {
+    actorId, speakerTokenId, combatant: game.combat?.combatant?.id
+  });
 });
 
 /** Owned Dash features can be activities and skip Argon's synthetic chat card. */
