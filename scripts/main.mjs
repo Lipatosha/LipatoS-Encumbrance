@@ -202,3 +202,116 @@ for (const hook of ["createActiveEffect", "updateActiveEffect", "deleteActiveEff
   });
 }
 Hooks.on("preMoveToken", validateMovement);
+
+// ===========================================================================
+// Overload roll-choice guard, Foundry v14 / D&D5e 6.0.x
+// ===========================================================================
+
+const RESTRICTED_ABILITIES = new Set(["str", "dex", "con"]);
+
+/** Resolve the actor from a D&D5e roll-process subject (Actor or Activity). */
+function actorFromRollSubject(subject) {
+  if (subject?.documentName === "Actor") return subject;
+  const actor = subject?.actor ?? subject?.item?.actor ?? subject?.parent?.actor;
+  return actor?.documentName === "Actor" ? actor : null;
+}
+
+/** Shared check for rendering and actual roll enforcement. */
+function forcedOverloadTier(process, ability) {
+  if (game.user?.isGM || game.system?.id !== "dnd5e" || !game.settings.get(ID, "enabled")) return 0;
+  if (!process?.hookNames?.includes("d20Test")) return 0;
+  const actor = actorFromRollSubject(process.subject);
+  const tier = getTier(actor);
+  if (tier < 2 || !RESTRICTED_ABILITIES.has(String(ability ?? "").toLowerCase())) return 0;
+  return tier;
+}
+
+function dialogAbility(app, root) {
+  // The ability dropdown can be changed while the roll dialog is open.
+  const element = (app.form ?? root.querySelector("form"))?.elements?.namedItem("ability");
+  return element?.value ?? app.config?.ability ?? "";
+}
+
+function toggleRollGuard(button, blocked, title) {
+  let wrapper = button.parentElement?.classList?.contains("lipatos-enc-roll-choice")
+    ? button.parentElement : null;
+  if (blocked) {
+    if (!wrapper) {
+      wrapper = document.createElement("span");
+      wrapper.className = "lipatos-enc-roll-choice";
+      button.before(wrapper);
+      wrapper.append(button);
+    }
+    wrapper.title = title;
+    wrapper.setAttribute("data-tooltip", title);
+    wrapper.setAttribute("aria-label", title);
+    wrapper.tabIndex = 0;
+    button.disabled = true;
+    button.setAttribute("aria-disabled", "true");
+    button.removeAttribute("autofocus");
+    button.classList.add("lipatos-enc-roll-disabled");
+  } else {
+    button.disabled = false;
+    button.removeAttribute("aria-disabled");
+    button.classList.remove("lipatos-enc-roll-disabled");
+    if (wrapper) wrapper.replaceWith(button);
+  }
+}
+
+function updateRollGuardUI(app, root) {
+  if (!app?.config || !root?.querySelector) return;
+  const buttonRow = root.querySelector(".dialog-buttons");
+  if (!buttonRow?.querySelector('button[data-action="disadvantage"]')) return;
+
+  const tier = forcedOverloadTier(app.config, dialogAbility(app, root));
+  const title = tier ? TITLES[tier] : "";
+  for (const action of ["normal", "advantage"]) {
+    const button = buttonRow.querySelector('button[data-action="' + action + '"]');
+    if (button) toggleRollGuard(button, !!tier, title);
+  }
+  const dis = buttonRow.querySelector('button[data-action="disadvantage"]');
+  if (dis && tier) {
+    dis.removeAttribute("disabled");
+    dis.disabled = false;
+    dis.setAttribute("autofocus", "");
+  }
+  buttonRow.classList.toggle("lipatos-enc-roll-forced", !!tier);
+  if (tier) buttonRow.dataset.overload = title;
+  else delete buttonRow.dataset.overload;
+}
+
+function attachRollGuardUI(app, html) {
+  const root = html instanceof HTMLElement ? html : html?.[0] instanceof HTMLElement ? html[0] : app?.element;
+  if (!(root instanceof HTMLElement)) return;
+  // D&D5e V2 config application exposes .config.subject and the three standard d20 buttons.
+  if (!app?.config?.hookNames?.includes("d20Test")) return;
+  if (!root.querySelector('.dialog-buttons button[data-action="disadvantage"]')) return;
+  if (!root.dataset.lipatosEncRollListening) {
+    root.dataset.lipatosEncRollListening = "1";
+    root.addEventListener("change", event => {
+      if (event.target?.name === "ability") updateRollGuardUI(app, root);
+    });
+  }
+  updateRollGuardUI(app, root);
+}
+
+/**
+ * D&D5e public post-configuration hook: runs even for Shift/Alt/Ctrl fast-forward,
+ * after button choice has been turned into a D20Roll but before evaluation.
+ */
+function enforceOverloadRoll(rolls, process) {
+  if (!Array.isArray(rolls)) return;
+  for (const roll of rolls) {
+    const ability = roll?.data?.abilityId ?? roll?.data?.roll?.ability ?? process?.ability;
+    if (!forcedOverloadTier(process, ability)) continue;
+    if (!roll?.d20?.applyAdvantage || !roll?.resetFormula) continue;
+    roll.options.advantageMode = -1;
+    roll.options.advantage = false;
+    roll.options.disadvantage = true;
+    roll.d20.applyAdvantage(-1);
+    roll.resetFormula();
+  }
+}
+
+Hooks.on("renderApplicationV2", attachRollGuardUI);
+Hooks.on("dnd5e.postD20TestRollConfiguration", enforceOverloadRoll);

@@ -1,0 +1,24 @@
+/* The disabled d20 buttons remain hoverable via their wrappers, showing the debuff title. */
+.dnd5e2 .dialog-buttons .lipatos-enc-roll-choice,
+.dnd5e .dialog-buttons .lipatos-enc-roll-choice,
+.roll-configuration .dialog-buttons .lipatos-enc-roll-choice {
+  flex: 1 1 0;
+  display: flex;
+  min-width: 0;
+  align-items: stretch;
+  cursor: not-allowed;
+}
+.roll-configuration .dialog-buttons .lipatos-enc-roll-choice button {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+.roll-configuration .dialog-buttons button.lipatos-enc-roll-disabled {
+  opacity: 0.42;
+  filter: grayscale(0.75);
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.roll-configuration .dialog-buttons.lipatos-enc-roll-forced button[data-action="disadvantage"] {
+  opacity: 1;
+}
