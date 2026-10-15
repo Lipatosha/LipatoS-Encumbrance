@@ -219,11 +219,16 @@ function actorFromRollSubject(subject) {
 /** Shared check for rendering and actual roll enforcement. */
 function forcedOverloadTier(process, ability) {
   if (game.user?.isGM || game.system?.id !== "dnd5e" || !game.settings.get(ID, "enabled")) return 0;
-  if (!process?.hookNames?.includes("d20Test")) return 0;
-  const actor = actorFromRollSubject(process.subject);
-  const tier = getTier(actor);
-  if (tier < 2 || !RESTRICTED_ABILITIES.has(String(ability ?? "").toLowerCase())) return 0;
-  return tier;
+  const hooks = process?.hookNames ?? [];
+  const isAttack = hooks.includes("attack");
+  if (!isAttack && !hooks.includes("d20Test")) return 0;
+  const tier = getTier(actorFromRollSubject(process.subject));
+  if (tier < 2) return 0;
+  // Under heavy encumbrance ALL attack rolls have disadvantage, including
+  // ranged weapon and spell attacks using INT/WIS/CHA.
+  // Only ability checks and saves are limited to STR/DEX/CON.
+  if (isAttack) return tier;
+  return RESTRICTED_ABILITIES.has(String(ability ?? "").toLowerCase()) ? tier : 0;
 }
 
 function dialogAbility(app, root) {
@@ -299,21 +304,39 @@ function attachRollGuardUI(app, html) {
  * D&D5e public post-configuration hook: runs even for Shift/Alt/Ctrl fast-forward,
  * after button choice has been turned into a D20Roll but before evaluation.
  */
+/**
+ * Native D&D5e 6.x hook, called after AttackActivity._buildAttackConfig and
+ * the other D20 builder callbacks, immediately before D20Roll.fromConfig().
+ * This covers regular dialogs, fast-forward keybinds and Argon HUD attacks.
+ */
+function enforceOverloadConfig(process, rollConfig, index, {formData} = {}) {
+  const ability = formData?.get?.("ability") ?? rollConfig?.options?.ability
+    ?? rollConfig?.data?.roll?.ability ?? process?.ability;
+  if (!forcedOverloadTier(process, ability)) return;
+  rollConfig.options ??= {};
+  rollConfig.options.advantageMode = CONFIG.Dice.D20Roll.ADV_MODE.DISADVANTAGE;
+  rollConfig.options.advantage = false;
+  rollConfig.options.disadvantage = true;
+}
+
+/** Additional last-chance protection after rolls are constructed. */
 function enforceOverloadRoll(rolls, process) {
   if (!Array.isArray(rolls)) return;
   for (const roll of rolls) {
-    const ability = roll?.data?.abilityId ?? roll?.data?.roll?.ability ?? process?.ability;
+    const ability = roll?.options?.ability ?? roll?.data?.abilityId
+      ?? roll?.data?.roll?.ability ?? process?.ability;
     if (!forcedOverloadTier(process, ability)) continue;
     if (!roll?.d20?.applyAdvantage || !roll?.resetFormula) continue;
-    roll.options.advantageMode = -1;
+    roll.options.advantageMode = CONFIG.Dice.D20Roll.ADV_MODE.DISADVANTAGE;
     roll.options.advantage = false;
     roll.options.disadvantage = true;
-    roll.d20.applyAdvantage(-1);
+    roll.d20.applyAdvantage(CONFIG.Dice.D20Roll.ADV_MODE.DISADVANTAGE);
     roll.resetFormula();
   }
 }
 
 Hooks.on("renderApplicationV2", attachRollGuardUI);
+Hooks.on("dnd5e.postBuildD20TestRollConfig", enforceOverloadConfig);
 Hooks.on("dnd5e.postD20TestRollConfiguration", enforceOverloadRoll);
 
 
