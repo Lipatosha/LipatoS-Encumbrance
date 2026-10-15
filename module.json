@@ -2,7 +2,7 @@
   "id": "lipatos-encumbrance",
   "title": "LipatoS — Нагрузка",
   "description": "Автоматизация уровней нагрузки и ограничения перемещения игроков.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "authors": [
     {
       "name": "LipatoS",

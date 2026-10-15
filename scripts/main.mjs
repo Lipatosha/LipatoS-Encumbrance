@@ -6,7 +6,11 @@ const DETAILS = [
   "Скорость перемещения уменьшается на 20 футов. Помеха на броски атаки, проверки характеристик и спасброски с использованием Силы, Ловкости или Телосложения.",
   "Скорость перемещения становится 0 футов. Помеха на броски атаки, проверки характеристик и спасброски с использованием Силы, Ловкости или Телосложения."
 ];
-const EFFECT_ICON = "icons/svg/hazard.svg";
+const EFFECT_ICONS = {
+  1: "modules/lipatos-encumbrance/assets/icons/encumbrance-1.jpg",
+  2: "modules/lipatos-encumbrance/assets/icons/encumbrance-2.jpg",
+  3: "modules/lipatos-encumbrance/assets/icons/encumbrance-3.jpg"
+};
 const queues = new Map();
 
 function num(value, fallback = NaN) {
@@ -78,7 +82,7 @@ async function synchronize(actor) {
   }
   const payload = {
     name: TITLES[tier],
-    img: EFFECT_ICON,
+    img: EFFECT_ICONS[tier],
     description: DETAILS[tier],
     disabled: false,
     transfer: false,
@@ -86,7 +90,7 @@ async function synchronize(actor) {
     flags: {[ID]: {automated: true, tier}}
   };
   if (effect) {
-    if (effect.getFlag(ID, "tier") !== tier || effect.disabled) await effect.update(payload);
+    if (effect.getFlag(ID, "tier") !== tier || effect.disabled || effect.img !== payload.img || effect.name !== payload.name || effect.description !== payload.description) await effect.update(payload);
   } else {
     await actor.createEmbeddedDocuments("ActiveEffect", [payload]);
   }
